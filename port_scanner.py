@@ -2,9 +2,10 @@
 
 #Build the PORT SCANNER. Flags: --host, --ports (range or list), --timeout, --output JSON. Uses ThreadPoolExecutor for concurrency. 
 # Reports open ports with service name. Handles connection refused vs timeout differently.
-import argparse
+import argparse, json
 import socket, errno
 from concurrent.futures import ThreadPoolExecutor
+from enum import Enum
 
 #Setting up Argument Parser...
 parser = argparse.ArgumentParser(description="Port Scanner")
@@ -15,7 +16,7 @@ parser.add_argument("--ports", default="22",
 parser.add_argument("--timeout", default=0.5,
                     help="Default time before giving up on a connection")
 parser.add_argument("--output", default="JSON",
-                    help="Receive output in JSON file")
+                    help="Receive output in JSON file") #TODO: Revisit this later
 args = parser.parse_args()
 
 #Scan Settings...
@@ -23,11 +24,16 @@ TARGET = args.host
 DESIRED_PORTS = args.ports
 TIMEOUT = args.timeout 
 
+class PortStatus(Enum):
+    OPEN = "Open"
+    CLOSED = "Closed"
+    FILTERED = "Filtered/Timeout"
+
 def get_ports(ports_str):
     if "-" in ports_str:
         P1, P2 = ports_str.split("-")
         return range(int(P1), int(P2) + 1) #Potential hazard later on (+1)?
-    return int(ports_str)
+    return [int(ports_str)]
 
 
 def scan_port(host, port):
@@ -42,43 +48,50 @@ def getPortResult(host, port):
         s.settimeout(TIMEOUT)
         result = s.connect_ex((host, port))
         return result
+    
+def printReport(output):
+    open_ports = 0
+    closed_ports = 0
+    filtered_ports = 0
+    for x in range(0, len(output['port_report'])):
+        if output['port_report'][x].get("status") == "Open":
+            open_ports += 1
+        elif output['port_report'][x].get("status") == "Closed":
+            closed_ports += 1
+        else:
+            filtered_ports += 1
+
+    print(f"Port Scanning report for {TARGET}")
+    print(f"{open_ports} open ports")
+    print(f"{closed_ports} closed ports")
+    print(f"{filtered_ports} ports filtered/timed out\n")
+
+    print(f"{'PORT':<10}{'STATUS':<20}{'SERVICE':<20}")
+    print("-" * 50)
+
+    for entry in output['port_report']:
+        if entry['status'] == PortStatus.OPEN.value:
+            print(f"{entry['port']:<10}{entry['status']:<20}{entry['service']:<20}")
+
+
+
 
 if __name__ == "__main__":
-    ip = socket.getaddrinfo(TARGET, None, socket.AF_INET)[0][4][0]
-    if isinstance(get_ports(DESIRED_PORTS), range):
-        with ThreadPoolExecutor(max_workers=100) as executor:
-            results = executor.map(lambda portX: scan_port(TARGET, portX), get_ports(DESIRED_PORTS))
-        for port, result in results:
-            if result:
-                print(f"Port {port} at IP {ip} is open. Service -> {socket.getservbyport(port)}")
-            else:
-                string1 = f"Port {port} at IP {ip} is closed. "
-                if getPortResult(TARGET, port) == errno.ECONNREFUSED:
-                    string2 = f"Connection Refused (Closed)" #TODO Test if this works
-                else:
-                    string2 =f"Connection attempt filtered or timed out."
-            print(string1 + string2)
+    IP = socket.getaddrinfo(TARGET, None, socket.AF_INET)[0][4][0]
+    output = {"Host":TARGET, "port_report":[]}
 
-    else:
-        result = scan_port(TARGET, int(DESIRED_PORTS))
-        if result[1] == True: #Port is Open
-            print(f"Port {DESIRED_PORTS} at IP {TARGET} is open. Service -> {socket.getservbyport(int(DESIRED_PORTS))}")
-        elif result == errno.ECONNREFUSED:
-            print(f"Connection Refused (Closed)")
+    with ThreadPoolExecutor(max_workers=100) as executor:
+        results = executor.map(lambda portX: scan_port(TARGET, portX), get_ports(DESIRED_PORTS))
+    for port, result in results:
+        if result:
+            output["port_report"].append({"port":port, "status":PortStatus("Open").value,
+                                            "service":socket.getservbyport(port)})            
         else:
-            print(f"Connection attempt filtered or timed out.")
-       
+            if getPortResult(TARGET, port) == errno.ECONNREFUSED:
+                output["port_report"].append({"port":port, "status":PortStatus("Closed").value,
+                                                "service":"null"})
+            else:
+                output["port_report"].append({"port":port, "status":PortStatus("Filtered/Timeout").value,
+                                                "service":"null"})           
 
-
-    #     for port in get_ports(DESIRED_PORTS):
-    #         print(F"Look at {port}")
-
-    # result = scan_port(TARGET, int(PORTS))
-    # if result[1] == True:
-    #     print(f"Port {PORTS} at IP {ip} is open. Service -> {socket.getservbyport(int(PORTS))}")
-    # else:
-    #     print(f"Port {PORTS} at IP {ip} is closed")
-    #     if result[1] == errno.ECONNREFUSED:
-    #         print(f"Connection Refused (Closed)") #TODO Test if this works
-    #     else:
-    #         print(f"Connection attempt filtered or timed out.")
+    printReport(output)  
